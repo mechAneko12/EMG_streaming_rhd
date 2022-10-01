@@ -63,8 +63,9 @@ def ReadWaveformDataDemo(channel_names, numBlocks):
 
     # Send TCP commands to set up TCP Data Output Enabled for wide
     for channel_name in channel_names:
-        for i in range(1, 65):
-            _command = 'set {channel_name}-{i}.tcpdataoutputenabled true'
+        for i in range(64):
+            channel_index = str(i).rjust(3, '0')
+            _command = f'set {channel_name}-{channel_index}.tcpdataoutputenabled true'
             scommand.sendall(_command.encode('utf-8'))
             time.sleep(0.1)
 
@@ -95,6 +96,9 @@ def ReadWaveformDataDemo(channel_names, numBlocks):
         if len(rawData) % waveformBytesPerBlock != 0:
             raise Exception('An unexpected amount of data arrived that is not an integer multiple of the expected data size per block')
 
+        if len(rawData) != waveformBytesPerBlocks:
+            continue
+        
         rawIndex = 0 # Index used to read the raw data that came in through the TCP socket
 
         for block in range(numBlocks):
@@ -112,9 +116,11 @@ def ReadWaveformDataDemo(channel_names, numBlocks):
                 rawTimestamp, rawIndex = readInt32(rawData, rawIndex)
                 
                 # Multiply by 'timestep' to convert timestamp to seconds
+                if frame == 0:
+                    print(rawTimestamp * timestep)
                 amplifierTimestamps.append(rawTimestamp * timestep)
 
-                for num_channel in numAmpChannels:
+                for num_channel in range(numAmpChannels):
                     # Expect 2 bytes of wideband data.
                     rawSample, rawIndex = readUint16(rawData, rawIndex)
                     
