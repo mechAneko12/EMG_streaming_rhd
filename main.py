@@ -88,8 +88,9 @@ def ReadWaveformDataDemo(channel_names, numBlocks):
 
     # Run controller for 1 second
     scommand.sendall(b'set runmode run')
+    time.sleep(0.1)
     start = time.time()
-    while time.time() - start < 3.0:
+    while time.time() - start < 30.0:
         blocksAmplifierData = [] # List used to contain scaled amplifier data in microVolts
         # Read waveform data
         rawData = swaveform.recv(waveformBytesPerBlocks)
