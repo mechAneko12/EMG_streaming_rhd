@@ -3,6 +3,7 @@ import time
 import sys
 import socket
 import numpy as np
+from scipy import signal
 
 def readUint32(array, arrayIndex):
     variableBytes = array[arrayIndex : arrayIndex + 4]
@@ -26,6 +27,10 @@ class RealtimeEmgProcessor():
     def __init__(self, channel_names: list, numBlocks: int) -> None:
         self.event = threading.Event()
         self.scommand, self.swaveform, self.timestep = self._init_rhd(channel_names)
+        
+        self.bandpass_b, self.bandpass_a = self._init_filter_bandpass()
+        self.comb_b, self.comb_a = self._init_filter_comb()
+        
         self.channel_names = channel_names
         self.numBlocks = numBlocks
 
@@ -149,19 +154,40 @@ class RealtimeEmgProcessor():
             self.event.set()
     
     def emg_processor(self):
+        s = time.time()
         while True:
             if self.event.is_set():  # 配列が用意されているか確認
                 # Scale this sample to convert to microVolts
                 raw_emg = 0.195 * (np.array(self.blocksAmplifierData) - 32768)
-                print(raw_emg.shape)
-                time.sleep(0.1)
-                # filter
+                filtered_emg = self._filter(raw_emg)
+                #print(filtered_emg.shape)
+                print(time.time()-s)
+                #time.sleep(0.1)
+                
                 # extend
                 # decomposition
                 # kmeans
                 # classification
             else:
                 self.event.wait()   # flag=Trueになるまでここでブロッキングする
+    
+    def _init_filter_bandpass(self, samplerate=2000, fp=np.array([4, 140]), fs=np.array([1, 150]), gpass=1, gstop=60):
+        fn = samplerate / 2   #ナイキスト周波数
+        wp = fp / fn  #ナイキスト周波数で通過域端周波数を正規化
+        ws = fs / fn  #ナイキスト周波数で阻止域端周波数を正規化
+        N, Wn = signal.buttord(wp, ws, gpass, gstop)  #オーダーとバターワースの正規化周波数を計算
+        b, a = signal.butter(N, Wn, 'band')            #フィルタ伝達関数の分子と分母を計算
+        return b, a
+    
+    def _init_filter_comb(self, w0=50.0, fs=2000, bw=3):
+        Q = w0 / bw
+        b, a = signal.iircomb(w0, Q, ftype='notch', fs=fs)
+        return b, a
+    
+    def _filter(self, x):        
+        y = signal.filtfilt(self.bandpass_b, self.bandpass_a, x, axis=0, padlen=0)                  #信号に対してフィルタをかける
+        y = signal.filtfilt(self.comb_b, self.comb_a, y, axis=0)
+        return y  
     
     def main_thread(self):
         while True:
@@ -180,7 +206,7 @@ if __name__ == '__main__':
     emg_getter.setDaemon(True)
     emg_getter.start()
 
-    emg_processor = threading.Thread(target=realtime_emg_processor.emg_processor, args=("MINI",))
+    emg_processor = threading.Thread(target=realtime_emg_processor.emg_processor)
     emg_processor.setDaemon(True)
     emg_processor.start()
 
