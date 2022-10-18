@@ -86,7 +86,7 @@ def ReadWaveformDataDemo(channel_names, numBlocks):
     amplifierTimestamps = [] # List used to contain scaled timestamp values in seconds
     allAmplifierData = [] # List used to contain scaled amplifier data in microVolts
 
-    # Run controller for 1 second
+    # Run controller
     scommand.sendall(b'set runmode run')
     time.sleep(0.1)
     start = time.time()
