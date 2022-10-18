@@ -2,6 +2,7 @@ import threading
 import time
 import sys
 import socket
+import numpy as np
 
 def readUint32(array, arrayIndex):
     variableBytes = array[arrayIndex : arrayIndex + 4]
@@ -25,6 +26,10 @@ class RealtimeEmgProcessor():
     def __init__(self, channel_names: list, numBlocks: int) -> None:
         self.event = threading.Event()
         self.scommand, self.swaveform, self.timestep = self._init_rhd(channel_names, numBlocks)
+        self.channel_names = channel_names
+        self.numBlocks = numBlocks
+
+        self.blocksAmplifierData = []
     
     def _init_rhd(channel_names: list, numBlocks: int):
         # Declare buffer size for reading from TCP command socket
@@ -75,6 +80,12 @@ class RealtimeEmgProcessor():
                 scommand.sendall(_command.encode('utf-8'))
                 time.sleep(0.1)
 
+        return scommand, swaveform, timestep
+    
+    def emg_getter(self):
+        # emg配列が用意されていない
+        self.event.clear()
+
         # Calculations for accurate parsing
         # At 30 kHz with 1 channel, 1 second of wideband waveform data (including magic number, timestamps, and amplifier data) is 181,420 bytes
         # N = (framesPerBlock * waveformBytesPerFrame + SizeOfMagicNumber) * NumBlocks where:
@@ -83,40 +94,74 @@ class RealtimeEmgProcessor():
         # SizeOfMagicNumber = 4; Magic number is a 4-byte (32-bit) unsigned int
         # NumBlocks = NumFrames / framesPerBlock ; At 30 kHz, 1 second of data has 30000 frames. NumBlocks must be an integer value, so round up to 235
 
-        numAmpChannels = len(channel_names) * 64
+        numAmpChannels = len(self.channel_names) * 64
         framesPerBlock = 128
         waveformBytesPerFrame = 4 + 2 * numAmpChannels
         waveformBytesPerBlock = framesPerBlock * waveformBytesPerFrame + 4
-        waveformBytesPerBlocks = numBlocks * waveformBytesPerBlock
+        waveformBytesPerBlocks = self.numBlocks * waveformBytesPerBlock
 
-        return scommand, swaveform, timestep
-    
-    def emg_getter(self):
-        count = 0
-        self.event.set()  # 初期値は青信号
+        # Run controller
+        self.scommand.sendall(b'set runmode run')
+        time.sleep(0.1)
+        
         while True:
-            if 5 < count <= 10:
-                self.event.clear()  # 赤信号にする
-                print("\33[41;1m赤信号...\033[0m")
-            elif count > 10:
-                self.event.set()  # 青信号にする
-                count = 0
-            else:
-                print("\33[42;1m青信号...\033[0m")
+            # Read waveform data
+            rawData = self.swaveform.recv(waveformBytesPerBlocks)
+            if len(rawData) % waveformBytesPerBlock != 0:
+                raise Exception('An unexpected amount of data arrived that is not an integer multiple of the expected data size per block')
 
-            time.sleep(1)
-            count += 1
+            if len(rawData) != waveformBytesPerBlocks:
+                continue
+            
+            # 配列をリセットするのでフラグをおろす
+            self.event.clear()
+
+            self.blocksAmplifierData = [] # List used to contain scaled amplifier data
+            rawIndex = 0 # Index used to read the raw data that came in through the TCP socket
+
+            for block in range(self.numBlocks):
+                # Expect 4 bytes to be TCP Magic Number as uint32.
+                # If not what's expected, raise an exception.
+                magicNumber, rawIndex = readUint32(rawData, rawIndex)
+                if magicNumber != 0x2ef07a08:
+                    raise Exception('Error... magic number incorrect')
+
+                # Each block should contain 128 frames of data - process each
+                # of these one-by-one
+                for frame in range(framesPerBlock):
+                    amplifierData = []
+                    # Expect 4 bytes to be timestamp as int32.
+                    rawTimestamp, rawIndex = readInt32(rawData, rawIndex)
+                    
+                    # Multiply by 'timestep' to convert timestamp to seconds
+                    #if frame == 0:
+                    #    print(rawTimestamp * self.timestep)
+                    #amplifierTimestamps.append(rawTimestamp * self.timestep)
+
+                    for num_channel in range(numAmpChannels):
+                        # Expect 2 bytes of wideband data.
+                        rawSample, rawIndex = readUint16(rawData, rawIndex)
+                        
+                        amplifierData.append(rawSample)
+                    self.blocksAmplifierData.append(amplifierData)
+            
+            # emg配列が用意されたフラグを立てる
+            self.event.set()
     
-    def emg_processor(self, name):
+    def emg_processor(self):
         while True:
-            if self.event.is_set():  # 青信号がどうかをチェック
-                print("[{}] 前進する...".format(name))
-                time.sleep(1)
+            if self.event.is_set():  # 配列が用意されているか確認
+                # Scale this sample to convert to microVolts
+                raw_emg = 0.195 * (np.array(self.blocksAmplifierData) - 32768)
+                print(raw_emg.shape)
+                time.sleep(0.1)
+                # filter
+                # extend
+                # decomposition
+                # kmeans
+                # classification
             else:
-                print("[{}] 赤信号のため、信号を待つ...".format(name))
-                self.event.wait()
-                # flag=Trueになるまでここでブロッキングする
-                print("[{}] 青信号のため、前進開始...".format(name))
+                self.event.wait()   # flag=Trueになるまでここでブロッキングする
     
     def main_thread(self):
         while True:
