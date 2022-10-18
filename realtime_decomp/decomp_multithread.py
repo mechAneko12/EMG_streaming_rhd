@@ -25,13 +25,13 @@ def readUint16(array, arrayIndex):
 class RealtimeEmgProcessor():
     def __init__(self, channel_names: list, numBlocks: int) -> None:
         self.event = threading.Event()
-        self.scommand, self.swaveform, self.timestep = self._init_rhd(channel_names, numBlocks)
+        self.scommand, self.swaveform, self.timestep = self._init_rhd(channel_names)
         self.channel_names = channel_names
         self.numBlocks = numBlocks
 
         self.blocksAmplifierData = []
     
-    def _init_rhd(channel_names: list, numBlocks: int):
+    def _init_rhd(self, channel_names: list):
         # Declare buffer size for reading from TCP command socket
         # This is the maximum number of bytes expected for 1 read. 1024 is plenty for a single text command
         COMMAND_BUFFER_SIZE = 1024 # Increase if many return commands are expected
