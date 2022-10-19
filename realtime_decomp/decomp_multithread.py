@@ -5,6 +5,8 @@ import socket
 import numpy as np
 from scipy import signal
 
+from .utils import calc
+
 def readUint32(array, arrayIndex):
     variableBytes = array[arrayIndex : arrayIndex + 4]
     variable = int.from_bytes(variableBytes, byteorder='little', signed=False)
