@@ -1,11 +1,60 @@
 import threading
 import time
 import sys
+import torch
+from torch import nn
+from torch.nn import functional as F
 import socket
 import numpy as np
 from scipy import signal
+import numpy as np
+import pandas as pd
+from sklearn.decomposition import FastICA
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from scipy import linalg
+from joblib import load
 
-from .utils import calc
+
+class Net(nn.Module):
+
+    # 使用するオブジェクトを定義
+    def __init__(self):
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(27, 27)
+        self.fc2 = nn.Linear(27, 6)
+
+    # 順伝播
+    def forward(self, x):
+
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.fc2(x)
+        return x
+
+# load some Ica matrix and kmeans center
+cluster_centers1 = np.load("cluster_centers_fle.npy")
+emg_mu_for_kmeans1 = np.load("emg_mu_for_kmeans_fle.npy")
+cluster_centers2 = np.load("cluster_centers_ext.npy")
+emg_mu_for_kmeans2 = np.load("emg_mu_for_kmeans_ext.npy")
+
+# load FastIca model
+emg_FastICA1 = load("emg_FastICA_fle.joblib")
+emg_FastICA2 = load("emg_FastICA_ext.joblib")
+
+# load kmeans model
+_kmeans1 = load("emg_kmeans_fle.joblib")
+_kmeans2 = load("emg_kmeans_ext.joblib")
+_kmeans1.fit(emg_mu_for_kmeans1[0:1000,[10]])
+_kmeans2.fit(emg_mu_for_kmeans2[0:1000,[10]])
+
+net_model = torch.load('best_model.pth')
+
+def extend_data(emg_raw):
+    df_emg_raw = pd.DataFrame(emg_raw)
+    emg_extended = pd.concat([df_emg_raw] + [df_emg_raw.shift(-x) for x in range(8)], axis=1).dropna()
+    emg_centered = emg_extended - np.mean(emg_extended, axis=0)
+    return emg_centered
 
 def readUint32(array, arrayIndex):
     variableBytes = array[arrayIndex : arrayIndex + 4]
@@ -157,19 +206,60 @@ class RealtimeEmgProcessor():
     
     def emg_processor(self):
         s = time.time()
+        old_data=np.zeros((384,128))
         while True:
             if self.event.is_set():  # 配列が用意されているか確認
                 # Scale this sample to convert to microVolts
                 raw_emg = 0.195 * (np.array(self.blocksAmplifierData) - 32768)
                 filtered_emg = self._filter(raw_emg)
                 #print(filtered_emg.shape)
-                print(time.time()-s)
+                processing_data = np.concatenate((old_data, filtered_emg),0)
+                old_data = filtered_emg
                 #time.sleep(0.1)
                 
                 # extend
+                emg_raw1 = processing_data[:, 0:64]
+                emg_raw2 = processing_data[:, 64:128]
+                
+                print(emg_raw1.shape)
+                
+                emg_mu1 = emg_FastICA1.transform(extend_data(emg_raw1))
+                emg_mu_squared1 = np.square(emg_mu1)
+                spike_trains1 = np.zeros_like(emg_mu_squared1)
+
+                emg_mu2 = emg_FastICA2.transform(extend_data(emg_raw2))
+                emg_mu_squared2 = np.square(emg_mu2)
+                spike_trains2 = np.zeros_like(emg_mu_squared2)
+                print(spike_trains2.shape)
                 # decomposition
+                for i in range(emg_mu_squared1.shape[1]):
+                    _kmeans1.cluster_centers_[0, 0] = cluster_centers1[0, i, 0]
+                    _kmeans1.cluster_centers_[1, 0] = cluster_centers1[1, i, 0]
+                    spike_trains1[:, i] = _kmeans1.predict(emg_mu_squared1[:, [i]])
+
+                pre_diff = pd.DataFrame(emg_mu_squared1).diff(-1) > 0
+                post_diff = pd.DataFrame(emg_mu_squared1).diff(1) > 0
+                spike_trains_processsed1 = spike_trains1 * pre_diff.values * post_diff.values
+
+                for i in range(emg_mu_squared2.shape[1]):
+                    _kmeans2.cluster_centers_[0, 0] = cluster_centers2[0, i, 0]
+                    _kmeans2.cluster_centers_[1, 0] = cluster_centers2[1, i, 0]
+                    spike_trains2[:, i] = _kmeans1.predict(emg_mu_squared2[:, [i]])
+
+                pre_diff = pd.DataFrame(emg_mu_squared2).diff(-1) > 0
+                post_diff = pd.DataFrame(emg_mu_squared2).diff(1) > 0
+                spike_trains_processsed2 = spike_trains2 * pre_diff.values * post_diff.values
                 # kmeans
+                print(spike_trains_processsed2.shape)
+                spike_trains = np.concatenate((spike_trains_processsed1[:, 0:18], spike_trains_processsed2[:, 0:9]),1)
+
+                fr_new = np.sum(spike_trains, axis=1)
+                
                 # classification
+                ceshiji = torch.from_numpy(fr_new.astype(np.float32))
+                result_g = net_model(ceshiji)
+                motion_g = torch.argmax(result_g, dim=1)
+                print(motion_g)
             else:
                 self.event.wait()   # flag=Trueになるまでここでブロッキングする
     
